@@ -4,7 +4,9 @@ use log::info;
 use rand::prelude::*;
 
 mod board;
+mod recorder;
 use board::{Board, Direction};
+use recorder::GameRecorder;
 
 fn main() {
     env_logger::init();
@@ -48,6 +50,9 @@ struct AutoTestApp {
     max_score: u32,
     last_move_time: f64,
     move_interval: f64,
+    recorder: Option<GameRecorder>,
+    recording_start_time: Option<f64>,
+    recording_duration: f64,
 }
 
 impl AutoTestApp {
@@ -59,7 +64,10 @@ impl AutoTestApp {
             total_score: 0,
             max_score: 0,
             last_move_time: 0.0,
-            move_interval: 0.2, // 每次移动的间隔时间（秒）
+            move_interval: 0.2,
+            recorder: None,
+            recording_start_time: None,
+            recording_duration: 30.0, // 录制30秒
         }
     }
 
@@ -83,10 +91,44 @@ impl AutoTestApp {
             if self.total_games > 0 { self.total_score / self.total_games } else { 0 }
         );
     }
+
+    fn start_recording(&mut self, window_pos: Pos2) {
+        self.recorder = Some(GameRecorder::new(
+            window_pos.x as i32,
+            window_pos.y as i32, // 移除Y轴偏移
+            500, // 使用实际窗口宽度
+            700, // 使用实际窗口高度
+        ));
+        self.recording_start_time = Some(0.0);
+    }
+
+    fn update_recording(&mut self, time: f64) {
+        if let Some(start_time) = self.recording_start_time {
+            if time - start_time >= self.recording_duration {
+                if let Some(recorder) = &self.recorder {
+                    if let Err(e) = recorder.save_gif("game_recording.gif") {
+                        info!("保存GIF失败: {}", e);
+                    } else {
+                        info!("GIF录制完成！");
+                    }
+                }
+                self.recorder = None;
+                self.recording_start_time = None;
+            } else if let Some(recorder) = &mut self.recorder {
+                recorder.capture_frame();
+            }
+        }
+    }
 }
 
 impl eframe::App for AutoTestApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let now = ctx.input(|i| i.time);
+
+        if self.recorder.is_none() && self.recording_start_time.is_none() {
+            self.start_recording(frame.info().window_info.position.unwrap_or_default());
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             // 显示测试统计信息
             ui.vertical_centered(|ui| {
@@ -96,23 +138,15 @@ impl eframe::App for AutoTestApp {
                     ui.label(format!("平均分数: {}", self.total_score / self.total_games));
                 }
                 ui.label(format!("最高分数: {}", self.max_score));
+
+                if let Some(start_time) = self.recording_start_time {
+                    let remaining_time = (self.recording_duration - (now - start_time)).max(0.0);
+                    ui.label(format!("录制中... 剩余时间: {:.1}秒", remaining_time));
+                }
             });
 
-            // 自动移动逻辑
-            let now = ui.input(|i| i.time);
-            if !self.game_over && now - self.last_move_time >= self.move_interval {
-                self.auto_move();
-                self.last_move_time = now;
-            }
-
-            // 检查游戏状态
-            if self.board.is_game_over() {
-                self.game_over = true;
-                self.reset_game();
-            }
-
             // 绘制游戏棋盘
-            let board_size = 400.0;
+            let board_size = 300.0;
             let cell_size = board_size / 4.0;
             let board_rect = Rect::from_min_size(
                 Pos2::new(
@@ -143,8 +177,8 @@ impl eframe::App for AutoTestApp {
                         Vec2::new(cell_size - 10.0, cell_size - 10.0),
                     );
 
-                    // 根据数字设置不同的背景颜色
-                    let bg_color = match cell_value {
+                    // 绘制格子背景
+                    let cell_color = match cell_value {
                         0 => Color32::from_rgb(205, 193, 180),
                         2 => Color32::from_rgb(238, 228, 218),
                         4 => Color32::from_rgb(237, 224, 200),
@@ -160,23 +194,17 @@ impl eframe::App for AutoTestApp {
                         _ => Color32::from_rgb(205, 193, 180),
                     };
 
-                    painter.rect_filled(cell_rect, 5.0, bg_color);
+                    painter.rect_filled(cell_rect, 5.0, cell_color);
 
-                    if cell_value != 0 {
+                    // 绘制数字
+                    if cell_value > 0 {
                         let text_color = if cell_value <= 4 {
                             Color32::from_rgb(119, 110, 101)
                         } else {
                             Color32::WHITE
                         };
 
-                        let font_size = if cell_value < 100 {
-                            40.0
-                        } else if cell_value < 1000 {
-                            35.0
-                        } else {
-                            30.0
-                        };
-
+                        let font_size = if cell_value >= 1000 { 24.0 } else { 32.0 };
                         painter.text(
                             cell_rect.center(),
                             egui::Align2::CENTER_CENTER,
@@ -187,24 +215,20 @@ impl eframe::App for AutoTestApp {
                     }
                 }
             }
-
-            // 控制按钮
-            ui.add_space(board_size + 40.0);
-            ui.horizontal(|ui| {
-                if ui.button("重新开始").clicked() {
-                    self.board = Board::new();
-                    self.game_over = false;
-                    info!("手动重新开始游戏");
-                }
-                
-                if ui.button("重置统计").clicked() {
-                    self.total_games = 0;
-                    self.total_score = 0;
-                    self.max_score = 0;
-                    info!("重置统计数据");
-                }
-            });
         });
+
+        // 自动移动逻辑
+        if now - self.last_move_time >= self.move_interval {
+            self.auto_move();
+            self.last_move_time = now;
+
+            if self.board.is_game_over() {
+                self.reset_game();
+            }
+        }
+
+        // 更新录制状态
+        self.update_recording(now);
 
         // 请求持续重绘以保持动画流畅
         ctx.request_repaint();
