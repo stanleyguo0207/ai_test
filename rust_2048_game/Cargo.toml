@@ -1,0 +1,11 @@
+[package]
+name = "rust_2048_game"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui = "0.23.0"
+eframe = { version = "0.23.0", features = ["default", "wgpu"], default-features = false }
+rand = "0.8.5"
+log = "0.4.20"
+env_logger = "0.10.1"
